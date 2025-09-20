@@ -1,0 +1,9 @@
+# System Primary and Secondary Body Parameters
+
+# Primary and secondary body gravitational parameter (in km^3/s^2)
+primary_GM: 398600.435507  # primary body GM    (https://ssd.jpl.nasa.gov/astro_par.html)
+secondary_GM: 4902.800118  # secondary body GM  (https://ssd.jpl.nasa.gov/astro_par.html)
+
+# Distance between primary and secondary bodies (in km)
+distance: 384400  # Average distance from Earth to Moon
+

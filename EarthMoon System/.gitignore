@@ -1,0 +1,11 @@
+# ignore everything in this folder...
+*
+
+# keep YAMLs
+!*.yaml
+
+# keep this .gitignore itself
+!.gitignore
+
+# keep directories
+!.gitkeep
