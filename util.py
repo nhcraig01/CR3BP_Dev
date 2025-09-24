@@ -10,9 +10,14 @@ import jax.numpy as jnp
 import diffrax as dfx
 from typing import Literal
 from functools import partial
-from numpy.linalg import norm
+from numpy.linalg import norm, det
 from scipy.linalg import eig
+from scipy.interpolate import LinearNDInterpolator
+from scipy.integrate import solve_ivp
 from scipy.optimize import linear_sum_assignment
+from numpy.linalg import svd
+import sympy as sp
+import h5py
 
 
 """
@@ -24,16 +29,63 @@ import os
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 """
 # JAX precision
-from jax import config as jax_config
-jax_config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", True)
 
+def CR3BP_EOMs_Eval():
+    x, y, z, vx, vy, vz = sp.symbols('x y z vx vy vz', real=True)
+    mu = sp.symbols('mu', real=True, positive=True)
+
+    r1 = sp.sqrt((x + mu)**2 + y**2 + z**2)
+    r2 = sp.sqrt((x - 1 + mu)**2 + y**2 + z**2)
+
+    U = 0.5*(x**2 + y**2) + (1 - mu) / r1 + mu / r2
+
+    r = sp.Matrix([[x],
+                   [y], 
+                   [z]])
+    v = sp.Matrix([[vx], 
+                   [vy], 
+                   [vz]])
+    X = sp.Matrix([[r],
+                   [v]])
+
+    dUdr = sp.Matrix([U]).jacobian(r)
+
+    #ax = 2*vy+dUdr[0]
+    #ay = -2*vx+dUdr[1]
+    #az = dUdr[2]
+
+    ax = x+2*vy-((1-mu)*(x+mu))/(r1**3) - (mu*(x-1+mu))/(r2**3)
+    ay = y-2*vx-((1-mu)*y)/(r1**3) - (mu*y)/(r2**3)
+    az = -((1-mu)*z)/(r1**3) - (mu*z)/(r2**3)
+    a = sp.Matrix([[ax], 
+                   [ay], 
+                   [az]])
+
+    X_dot = sp.Matrix([[v],
+                     [a]])
+    
+    CR3BP_EOMs_sym = sp.lambdify([X,mu], X_dot, 'jax')
+    CR3BP_dfdX_sym = sp.lambdify([X,mu], X_dot.jacobian(X), 'jax')
+    CR3BP_U_sym = sp.lambdify([r,mu],U, 'jax')
+    CR3BP_dUdr_sym = sp.lambdify([r,mu],dUdr, 'jax')
+
+    CR3BP_EOMs  = lambda X, mu: jnp.squeeze(jnp.asarray(CR3BP_EOMs_sym(X, mu)), -1)
+    CR3BP_dfdX  = lambda X, mu: jnp.asarray(CR3BP_dfdX_sym(X, mu))  
+    CR3BP_U     = lambda r, mu: jnp.asarray(CR3BP_U_sym(r, mu))
+    CR3BP_dUdr  = lambda r, mu: jnp.squeeze(jnp.asarray(CR3BP_dUdr_sym(r, mu)), -1)
+
+
+    return CR3BP_EOMs, CR3BP_dfdX, CR3BP_U, CR3BP_dUdr
+
+CR3BP_EOMs, CR3BP_dfdX, CR3BP_U, CR3BP_dUdr = CR3BP_EOMs_Eval()
 
 @partial(jax.jit)
-def CR3BP_U_jax(r: jnp.ndarray, mu: float) -> float:
+def CR3BP_U_jax(r: jnp.array, mu: float) -> float:
     """ Computes the pseudo-potential function U for the Circular Restricted Three-Body Problem (CR3BP).
 
     Parameters:
-    r (jnp.ndarray): Position vector in the rotating frame (x, y, z).
+    r (jnp.array): Position vector in the rotating frame (x, y, z).
     mu (float): Mass ratio of the two primary bodies.
 
     Returns:
@@ -48,71 +100,24 @@ def CR3BP_U_jax(r: jnp.ndarray, mu: float) -> float:
 CR3BP_dUdr_jax = partial(jax.jit)(jax.grad(CR3BP_U_jax, argnums=0)) # 1st order Jacobians of U
 CR3BP_dUdrdr_jax = partial(jax.jit)(jax.jacobian(CR3BP_dUdr_jax, argnums=0)) # 2nd order Jacobians of U
 
-@partial(jax.jit)
-def CR3BP_dfdX_jax(X: jnp.ndarray, mu: float) -> jnp.ndarray:
-    """ Computes the Jacobian of the equations of motion for the Circular Restricted Three-Body Problem (CR3BP)
-
-    Parameters:
-    X (jnp.ndarray): State vector [x, y, z, vx, vy, vz].
-    mu (float): Mass ratio of the two primary bodies.
-
-    Returns:
-    jnp.ndarray: Jacobian matrix of the equations of motion.
-    """
-    r = X[:3]
-    v = X[3:]
-    
-    # Construct the Jacobian matrix
-
-    dUdrdr = CR3BP_dUdrdr_jax(r, mu)  
-    A = jnp.block([
-        [jnp.zeros((3, 3)), jnp.eye(3)],
-        [dUdrdr, jnp.array([[0, 2, 0], [-2, 0, 0], [0, 0, 0]])]
-    ])
-    
-    return A
-
-@partial(jax.jit)
-def CR3BP_EOMs_jax(X: jnp.ndarray, mu: float) -> jnp.ndarray:
-    """ Computes the equations of motion for the Circular Restricted Three-Body Problem (CR3BP) in the rotating frame.
-
-    Parameters:
-    X (jnp.ndarray): State vector [x, y, z, vx, vy, vz].
-    mu (float): Mass ratio of the two primary bodies.
-
-    Returns:
-    X_dot (jnp.ndarray): Time derivative of the state vector [vx, vy, vz, ax, ay, az].
-    """
-    r = X[:3]
-    v = X[3:]
-    
-    dU = CR3BP_dUdr_jax(r, mu)
-    
-    ax = 2 * v[1] + dU[0]
-    ay = -2 * v[0] + dU[1]
-    az = dU[2]
-    a = jnp.array([ax, ay, az])
-    
-    return jnp.concatenate((v, a))
-
-@partial(jax.jit, static_argnames=["rtol","atol","dt0",])
-def CR3BP_Phi_jax(X0: jnp.ndarray, T: float, mu: float, rtol: float = 1e-13, atol: float = 1e-13, dt0 = None) -> jnp.ndarray:
+@partial(jax.jit, static_argnames=["rtol","atol",])
+def CR3BP_Phi_jax(X0: jnp.array, T: float, mu: float, rtol: float = 1e-13, atol: float = 1e-13) -> jnp.array:
     """ CR3BP flow map using JAX and Diffrax.
     Integrates the equations of motion for the Circular Restricted Three-Body Problem (CR3BP) using JAX and Diffrax.
 
     Parameters:
-    X0 (jnp.ndarray): Initial state vector [x, y, z, vx, vy, vz].
+    X0 (jnp.array): Initial state vector [x, y, z, vx, vy, vz].
     T (float): Total integration time.
     mu (float): Mass ratio of the two primary bodies.
     rtol (float): Relative tolerance for the integrator.
     atol (float): Absolute tolerance for the integrator.
 
     Returns:
-    Xf (jnp.ndarray): State vector at time T.
+    Xf (jnp.array): State vector at time T.
     """
     def ode(t, X, args):
         mu = args
-        return CR3BP_EOMs_jax(X, mu)
+        return CR3BP_EOMs(X, mu)
 
     term = dfx.ODETerm(ode)
     solver = dfx.Dopri8()
@@ -124,23 +129,58 @@ def CR3BP_Phi_jax(X0: jnp.ndarray, T: float, mu: float, rtol: float = 1e-13, ato
         solver,
         t0=0.0,
         t1=T,
-        dt0=dt0,
+        dt0=T/1e4,
         y0=X0,
         args=mu,
         stepsize_controller=controller,
-        max_steps=1_000_000,
+        max_steps=5_000_000,
         saveat=saveat
     )
     return sol.ys[-1]
 
-CR3BP_dPhidX0_jax = partial(jax.jit, static_argnames=["rtol","atol","dt0",])(jax.jacrev(CR3BP_Phi_jax, argnums=0))
+CR3BP_dPhidX0_jax = partial(jax.jit, static_argnames=["rtol","atol",])(jax.jacrev(CR3BP_Phi_jax, argnums=0))
     
-@partial(jax.jit, static_argnames=["rtol","atol","dt0",])
-def CR3BP_dPhi_jax(X0: jnp.ndarray, T: float, mu: float, rtol: float = 1e-13, atol: float = 1e-13, dt0 = None) -> tuple[jnp.ndarray, jnp.ndarray]:
+def CR3BP_Traj_Sol(X0: np.array, T: float, mu: float, rtol: float = 1e-13, atol: float = 1e-13, Npts: int = 2000) -> tuple[np.array, np.array]:
+    """ CR3BP Trajectory evaluation
+    Integrates the equations of motion for the Circular Restricted Three-Body Problem (CR3BP) for a trajectory
+
+    Parameters:
+    X0 (np.array): Initial state vector [x, y, z, vx, vy, vz].
+    T (float): Total integration time.
+    mu (float): Mass ratio of the two primary bodies.
+    rtol (float): Relative tolerance for the integrator.
+    atol (float): Absolute tolerance for the integrator.
+    Npts (int): Number of points to use in the time grid.
+
+    Returns:
+    X_hst (np.array): Array of state vectors at each time step.
+    t_hst (np.array): Array of time steps.
+    """
+
+    def ode(t, X):
+        return np.asarray(CR3BP_EOMs(X, mu)).reshape(-1)
+
+    t_hst = np.linspace(0.0, T, Npts)
+    sol = solve_ivp(
+        fun = ode, 
+        t_span = [0.0,T], 
+        y0 = X0, 
+        method = "DOP853", 
+        t_eval = t_hst, 
+        rtol = rtol, 
+        atol = atol, 
+        max_step=T/100, 
+        first_step = 1e-4)
+    
+    X_hst = sol.y
+    return X_hst.T, t_hst
+
+@partial(jax.jit, static_argnames=["rtol","atol",])
+def CR3BP_dPhi_jax(X0: jnp.array, T: float, mu: float, rtol: float, atol: float) -> tuple[jnp.array, jnp.array]:
     """ Computes the Jacobians of the flow map for the Circular Restricted Three-Body Problem (CR3BP) using JAX and Diffrax.
 
     Parameters:
-    X0 (jnp.ndarray): Initial state vector [x, y, z, vx, vy, vz].
+    X0 (jnp.array): Initial state vector [x, y, z, vx, vy, vz].
     T (float): Total integration time.
     mu (float): Mass ratio of the two primary bodies.
     rtol (float): Relative tolerance for the integrator.
@@ -148,29 +188,26 @@ def CR3BP_dPhi_jax(X0: jnp.ndarray, T: float, mu: float, rtol: float = 1e-13, at
 
     Returns:
     tuple: A tuple containing:
-        - dPhidX0 (jnp.ndarray): Jacobian of the flow map with respect to the initial state.
-        - dPhidT (jnp.ndarray): Jacobian of the flow map with respect to time T.
+        - dPhidX0 (jnp.array): Jacobian of the flow map with respect to the initial state.
+        - dPhidT (jnp.array): Jacobian of the flow map with respect to time T.
     """
     
-    Xf = CR3BP_Phi_jax(X0, T, mu, rtol, atol, dt0)
-    dPhidX0 = CR3BP_dPhidX0_jax(X0, T, mu, rtol, atol, dt0)
-    dPhidT = CR3BP_EOMs_jax(Xf, mu)
+    Xf = CR3BP_Phi_jax(X0, T, mu, rtol, atol)
+    dPhidX0 = CR3BP_dPhidX0_jax(X0, T, mu, rtol, atol)
+    dPhidT = CR3BP_EOMs(Xf, mu)
     return dPhidX0, dPhidT
 
-def CR3BP_symOrb_f(fv: np.ndarray, mu: float, fixed_var: Literal["x0", "z0", "free"] = "free", rtol: float = 1e-13, atol: float = 1e-13, dt0 = None) -> np.ndarray:
+def CR3BP_symOrb_f(fv: np.array, mu: float, rtol: float = 1e-13, atol: float = 1e-13) -> np.array:
     """ Computes the final state residual for a symmetric orbit solver in the Circular Restricted Three-Body Problem (CR3BP).
 
     Parameters:
-    fv (np.ndarray): Free variables defining the symmetric periodic orbit.
+    fv (np.array): Free variables defining the symmetric periodic orbit.
     mu (float): Mass ratio of the two primary bodies.
-    fixed_var (str): Specifies which variable is fixed ('x0', 'z0', or 'free').
     rtol (float): Relative tolerance for the integrator.
     atol (float): Absolute tolerance for the integrator.
 
     Returns:
-    tuple: A tuple containing:
-        - res (np.ndarray): residual of the final state at half the period.
-        - jac (np.ndarray): Jacobian of the residual with respect to the free variables.
+    res (np.array): residual of the final state at half the period.
     """
     # Unpack free variables
     x0, z0, vy0, T2 = fv
@@ -178,7 +215,7 @@ def CR3BP_symOrb_f(fv: np.ndarray, mu: float, fixed_var: Literal["x0", "z0", "fr
     X0 = np.array([x0, 0.0, z0, 0.0, vy0, 0.0])
     
     # Integrate to half the period
-    Xf = CR3BP_Phi_jax(X0, T2, mu, rtol, atol, dt0)
+    Xf = CR3BP_Phi_jax(X0, T2, mu, rtol, atol)
 
     # Final state residual for symmetric orbit
     res = np.array([
@@ -189,18 +226,18 @@ def CR3BP_symOrb_f(fv: np.ndarray, mu: float, fixed_var: Literal["x0", "z0", "fr
 
     return res
 
-def CR3BP_symOrb_df(fv: np.ndarray, mu: float, fixed_var: Literal["x0", "z0", "free"] = "free", rtol: float = 1e-13, atol: float = 1e-13, dt0 = None) -> np.ndarray:
+def CR3BP_symOrb_df(fv: np.array, mu: float, fixed_var: Literal["x", "z", "free"], rtol: float = 1e-13, atol: float = 1e-13) -> np.array:
     """ Computes the Jacobian of the final state residual for a symmetric orbit solver in the Circular Restricted Three-Body Problem (CR3BP).
 
     Parameters:
-    fv (np.ndarray): Free variables defining the symmetric periodic orbit.
+    fv (np.array): Free variables defining the symmetric periodic orbit.
     mu (float): Mass ratio of the two primary bodies.
     fixed_var (str): Specifies which variable is fixed ('x0', 'z0', or 'free').
     rtol (float): Relative tolerance for the integrator.
     atol (float): Absolute tolerance for the integrator.
 
     Returns:
-    jac (np.ndarray): Jacobian of the residual with respect to the free variables.
+    jac (np.array): Jacobian of the residual with respect to the free variables.
     """
 
     # Unpack free variables
@@ -209,13 +246,13 @@ def CR3BP_symOrb_df(fv: np.ndarray, mu: float, fixed_var: Literal["x0", "z0", "f
     X0 = np.array([x0, 0.0, z0, 0.0, vy0, 0.0])
 
     # compute Jacobians of the flow map
-    dPhidX0, dPhidT = CR3BP_dPhi_jax(X0, T2, mu, rtol, atol, dt0)
+    dPhidX0, dPhidT = CR3BP_dPhi_jax(X0, T2, mu, rtol, atol)
     
     #  Full Jacobian including time derivative
     jac_full = np.concatenate((dPhidX0, dPhidT[:, None]), axis=1)
 
     # Jacobian of the initial state with respect to free variables
-    if fixed_var == "x0":
+    if fixed_var == "x":
         dX0dFv = np.array([[0, 0, 0, 0],
                              [0, 0, 0, 0],
                              [0, 1, 0, 0],
@@ -223,7 +260,7 @@ def CR3BP_symOrb_df(fv: np.ndarray, mu: float, fixed_var: Literal["x0", "z0", "f
                              [0, 0, 1, 0],
                              [0, 0, 0, 0],
                              [0, 0, 0, 1]], dtype=float)
-    elif fixed_var == "z0":
+    elif fixed_var == "z":
         dX0dFv = np.array([[1, 0, 0, 0],
                              [0, 0, 0, 0],
                              [0, 0, 0, 0],
@@ -251,46 +288,47 @@ def CR3BP_symOrb_df(fv: np.ndarray, mu: float, fixed_var: Literal["x0", "z0", "f
 
     return jac
 
-def CR3BP_symOrb_solver(fv0: np.ndarray, mu: float, fixed_var: Literal["x0", "z0", "free"] = "free", gtol: float = 1e-12, rtol: float = 1e-13, atol: float = 1e-13, dt0 = None) -> tuple[np.ndarray, dict]:
+def CR3BP_symOrb_solver(fv0: np.array, mu: float, fixed_var: Literal["x", "z", "free"] = "free", gtol: float = 1e-12, rtol: float = 1e-13, atol: float = 1e-13):
     """ Solves for a symmetric periodic orbit in the Circular Restricted Three-Body Problem (CR3BP) using a root-finding approach.
 
     Parameters:
-    fv0 (np.ndarray): Initial guess for the free variables defining the symmetric periodic orbit.
+    fv0 (np.array): Initial guess for the free variables defining the symmetric periodic orbit.
     mu (float): Mass ratio of the two primary bodies.
     fixed_var (str): Specifies which variable is fixed ('x0', 'z0', or 'free').
     gtol(float): Gradient tolerance for the root-finding algorithm.
     rtol (float): Relative tolerance for the integrator.
     atol (float): Absolute tolerance for the integrator.
+    dt0 (float): Intial integration step size
 
     Returns:
     tuple: A tuple containing:
-        - fv_sol (np.ndarray): Solution for the free variables defining the symmetric periodic orbit.
+        - fv_sol (np.array): Solution for the free variables defining the symmetric periodic orbit.
         - info (dict): Information about the root-finding process.
     """
     
-    xtol = 1e-14
-    ftol = 1e-14
-    res = lambda fv: CR3BP_symOrb_f(fv,mu, fixed_var, rtol, atol, dt0)
-    res_jac = lambda fv: CR3BP_symOrb_df(fv,mu, fixed_var, rtol, atol, dt0)
+    xtol = 1e-12
+    ftol = 1e-12
+    res = lambda fv: CR3BP_symOrb_f(fv,mu, rtol, atol)
+    res_jac = lambda fv: CR3BP_symOrb_df(fv,mu, fixed_var, rtol, atol)
 
-    fv_sol = least_squares(res, x0 = fv0, jac=res_jac, verbose=2,ftol=ftol,xtol=xtol,gtol=gtol,x_scale='jac')
+    fv_sol = least_squares(res, x0 = fv0, jac=res_jac, verbose=0,ftol=ftol,xtol=xtol,gtol=gtol,x_scale='jac',method='dogbox')
     
-    return fv_sol["x"]
+    return fv_sol
 
-def CR3BP_Lyap_ICs(Lagrn_pt: np.ndarray, mu: float, amp: float=1e-2) -> tuple[np.ndarray,float]:
+def CR3BP_Lyap_ICs(Lagrn_pt: np.array, mu: float, amp: float=1e-2) -> tuple[np.array,float]:
     """ Computes ballpark initial conditions for a planar orbit around a Lagrange point via linearizing the EOMs.
 
     Parameters:
-    Lagrn_pt (np.ndarray): Position of the Lagrange point [x, y, z].
+    Lagrn_pt (np.array): Position of the Lagrange point [x, y, z].
     mu (float): Mass ratio of the two primary bodies.
     amp (float): Amplitude of the initial perturbation.
 
     Returns:
-    np.ndarray: Initial state vector [x, y, z, vx, vy, vz] for the Lyapunov orbit.
+    np.array: Initial state vector [x, y, z, vx, vy, vz] for the Lyapunov orbit.
     """
     # Compute the Jacobian of the EOMs at the Lagrange point
     X_eq = np.array([Lagrn_pt[0], Lagrn_pt[1], Lagrn_pt[2], 0.0, 0.0, 0.0])
-    A = CR3BP_dfdX_jax(X_eq, mu)
+    A = CR3BP_dfdX(X_eq, mu)
     
     # Sort eigenvalues and eigenvectors
     w, V = eig(A)
@@ -311,14 +349,145 @@ def CR3BP_Lyap_ICs(Lagrn_pt: np.ndarray, mu: float, amp: float=1e-2) -> tuple[np
     
     return np.array(ICs), T
 
-def fix_phase(v: np.ndarray) -> np.ndarray:
+def CR3BP_Jacobi(X: np.array, mu: float) -> float:
+    """ Computes the Jacobi constant for a given state in the Circular Restricted Three-Body Problem (CR3BP).
+
+    Parameters:
+    X (np.array): State vector [x, y, z, vx, vy, vz].
+    mu (float): Mass ratio of the two primary bodies.
+
+    Returns:
+    float: The Jacobi constant.
+    """
+    r = X[:3]
+    v = X[3:]
+    
+    U = CR3BP_U(r, mu)
+    v2 = np.dot(v, v)
+    
+    JC = 2 * U - v2
+    return JC
+
+def CR3BP_BrkVals(Phi: np.array) -> np.array:
+    """ Computes the stability indices (BrkVals) for a periodic orbit in the Circular Restricted Three-Body Problem (CR3BP).
+
+    Parameters:
+    Phi (np.array): State transition matrix (STM) at the end of the period.
+    mu (float): Mass ratio of the two primary bodies.
+
+    Returns:
+    np.array: Array containing the two stability indices [alpha, beta].
+    """
+    alpha = 2-np.trace(Phi)
+    beta = 0.5*(alpha**2 + 2 - np.trace(Phi @ Phi))
+
+    return np.array([alpha, beta])
+
+def CR3BP_PseudArcL(dfdfv: np.array, cont: dict = None) -> np.array:
+    """ Computes the pseudo-arclength tangent vector for continuation of periodic orbits in the Circular Restricted Three-Body Problem (CR3BP).
+
+    Parameters:
+    dfdfv (np.array): Jacobian of the residual with respect to the free variables of current orbit
+    cont (dict): Continuation parameters
+        - 'type' (str): Type of continuation ('family' or 'bifurcation').
+        - 'norm_dst' (float): Desired step size in the continuation.
+        - 'align_vec' (np.array): Tangent vector from the previous step for continuity.
+        - 'norm_dims' (np.array): Indices of the dimensions to normalize the step size.
+
+    Returns:
+    np.array: The pseudo-arclength tangent vector.
+    """
+    # Perform SVD on the augmented matrix
+    U, S, Vh = svd(dfdfv)
+    V = Vh.conj().T
+    
+    # Determine the tangent vector
+    if cont['type'] == 'family':
+        # Take the singular vector corresponding to the second smallest singular value
+        tangent = V[:, -1]
+    elif cont[type] == 'bifurcation':
+        tangent = V[:, -2]
+        return tangent/norm(tangent)
+        
+    # Align the tangent with align_vec
+    if np.dot(tangent, cont['align_vec']) < 0:
+        tangent = -tangent  # flip direction for continuity
+    # Normalize the tangent vector based on specified dimensions
+    tangent = (tangent / norm(tangent[cont['norm_dims']])) * cont["norm_dst"]
+
+    return tangent
+
+def CR3BP_Bifur_Detec(fv0: np.array, fv1: np.array, Brk0: np.array, Brk1: np.array, Type: Literal["Tan","P2","P3","P4"], fun_dfdfv) -> tuple[np.array,np.array]:
+    """ This function detects bifurcations of a given type
+
+    Parameters:
+    fv0 (np.array): Free variable prior to bifurcation
+    fv1 (np.array): Free variable after bifurcation
+    Brk0 (np.array): Brouke values prior
+    Brk1 (np.array): Brouke values after
+    Type (string): Bifurcation type
+
+    Returns: 
+    fv_B (np.array): Approximated free variable at bifurcation
+    dfv_B (np.array): Normalized bifurcation tangent direction
+    """
+    if Type == "Tan":
+        beta = lambda alpha: -2*alpha - 2
+    elif Type == "P2":
+        beta = lambda alpha: 2*alpha - 2
+    elif Type == "P3":
+        beta = lambda alpha: alpha + 1
+    elif Type == "P4":
+        beta = lambda alpha: 2
+    
+        # set up linear interpolation points
+    orb_P1 = Brk0
+    orb_P2 = Brk1
+
+    bif_P1 = np.array([Brk0[0],beta(Brk0[0])])
+    bif_P2 = np.array([Brk1[0],beta(Brk1[0])])
+
+    # Find the approximate intersection point
+    a11 = det(np.array([orb_P1,
+                        orb_P2]))
+    a12 = det(np.array([[orb_P1[0], 1],
+                        [orb_P2[0], 1]]))
+    a21 = det(np.array([bif_P1, 
+                        bif_P2]))
+    a22 = det(np.array([[bif_P1[0], 1],
+                        [bif_P2[0], 1]]))
+    
+    b12 = det(np.array([[orb_P1[1], 1],
+                        [orb_P2[1], 1]]))
+    b22 = det(np.array([[bif_P1[1], 1],
+                        [bif_P2[1], 1]]))
+    
+    num = det(np.array[[a11, a12], 
+                       [a21, a22]])
+    den = det(np.array([[a12, b12],
+                        [a22, b22]]))
+    
+    # Brouke alpha value at intersection
+    alph_bif = num/den
+
+    # Bifurcation distance between the pre and post values
+    d = (alph_bif-Brk0[0])/(Brk1[0]-Brk0[0])
+
+    fv_B = (1-d)*fv0 + d*fv1
+    
+    cont = {"Type": "bifurcation"}
+    dfv_B = CR3BP_PseudArcL(fun_dfdfv(fv_B),cont)
+
+    return fv_B, dfv_B
+
+def fix_phase(v: np.array) -> np.array:
     """ Fixes the phase of a vector v by normalizing it based on its first non-zero element.
 
     Parameters:
-    v (np.ndarray): The vector whose phase needs to be fixed.
+    v (np.array): The vector whose phase needs to be fixed.
 
     Returns:
-    np.ndarray: The phase-fixed vector.
+    np.array: The phase-fixed vector.
     """
     k = np.flatnonzero(np.abs(v) > 0)
     if k.size:
@@ -326,14 +495,14 @@ def fix_phase(v: np.ndarray) -> np.ndarray:
         v = v * (a.conjugate() / abs(a))
     return v
 
-def fix_phase_all(V: np.ndarray) -> np.ndarray:
+def fix_phase_all(V: np.array) -> np.array:
     """Apply fix_phase to every eigenvector (column) independently.
 
     Parameters:
-    V (np.ndarray): Matrix whose columns are eigenvectors.
+    V (np.array): Matrix whose columns are eigenvectors.
 
     Returns:
-    np.ndarray: Matrix with phase-fixed eigenvectors as columns.
+    np.array: Matrix with phase-fixed eigenvectors as columns.
     """
 
     W = V.copy()
@@ -341,19 +510,19 @@ def fix_phase_all(V: np.ndarray) -> np.ndarray:
         W[:, j] = fix_phase(W[:, j])
     return W
 
-def pair_reciprocals(w: np.ndarray, v: np.ndarray, tol_recip: float=1e-8, tol_unit: float=1e-8) -> tuple[np.ndarray, np.ndarray]:
+def pair_reciprocals(w: np.array, v: np.array, tol_recip: float=1e-8, tol_unit: float=1e-8) -> tuple[np.array, np.array]:
     """ Pairs eigenvalues and eigenvectors that are reciprocals of each other
     
     Parameters:
-    w (np.ndarray): Array of eigenvalues.
-    v (np.ndarray): Matrix whose columns are eigenvectors.
+    w (np.array): Array of eigenvalues.
+    v (np.array): Matrix whose columns are eigenvectors.
     tol_recip (float): Tolerance for determining if two eigenvalues are reciprocals.
     tol_unit (float): Tolerance for determining if an eigenvalue is on the unit circle.
 
     Returns:
     tuple: A tuple containing:
-        - w_paired (np.ndarray): Eigenvalues paired as reciprocals.
-        - v_paired (np.ndarray): Corresponding eigenvectors.
+        - w_paired (np.array): Eigenvalues paired as reciprocals.
+        - v_paired (np.array): Corresponding eigenvectors.
     """
     n = len(w)
     unused = np.ones(n,dtype=bool)
@@ -389,7 +558,7 @@ def pair_reciprocals(w: np.ndarray, v: np.ndarray, tol_recip: float=1e-8, tol_un
     v_paired = v[:, order]
     return w_paired, v_paired
 
-def eig_sort(A: np.ndarray,prev_vecs: np.ndarray | None=None, tol_one: float=1e-4, tol_unit: float=1e-4, tol_recip: float=1e-8) -> tuple[np.ndarray, np.ndarray]:
+def eig_sort(A: np.array,prev_vecs: np.array = None, tol_one: float=1e-4, tol_unit: float=1e-4, tol_recip: float=1e-8) -> tuple[np.array, np.array]:
     """ Sorts the eigenvalues and eigenvectors of a matrix A to maintain continuity with previous eigenvectors. 
     Following rules are established if no previous basis is given:
     1. Vals and Vecs paired as reciprocals
@@ -398,13 +567,13 @@ def eig_sort(A: np.ndarray,prev_vecs: np.ndarray | None=None, tol_one: float=1e-
     If previous basis is given, the new basis is chosen to maximize overlap with previous basis.
     
     Parameters:
-    A (np.ndarray): The input matrix.
-    prev_vecs (np.ndarray): The previous eigenvectors for continuity.
+    A (np.array): The input matrix.
+    prev_vecs (np.array): The previous eigenvectors for continuity.
 
     Returns:
     tuple: A tuple containing:
-        - w_out (np.ndarray): Sorted eigenvalues.
-        - V_out (np.ndarray): Sorted eigenvectors.
+        - w_out (np.array): Sorted eigenvalues.
+        - V_out (np.array): Sorted eigenvectors.
     """
     w, V = eig(A) # w: eigenvalues, V: eigenvectors as columns
     n = len(w)
@@ -452,3 +621,12 @@ def eig_sort(A: np.ndarray,prev_vecs: np.ndarray | None=None, tol_one: float=1e-
         V_out = V[:, col_in_prev_order].copy()
 
     return w_out, V_out
+
+def save_family(family,out_loc):    
+    with h5py.File(out_loc, "w") as f:
+        f.create_dataset("Name",data=family["Name"],compression="gzip",chunks=True)
+        f.create_dataset("X_hst",data=family["X_hst"],compression="gzip",chunks=True)
+        f.create_dataset("t_hst",data=family["t_hst"],compression="gzip",chunks=True)
+        f.create_dataset("JCs",data=family["JCs"],compression="gzip",chunks=True)
+        f.create_dataset("STMs",data=family["STMs"],compression="gzip",chunks=True)
+        f.create_dataset("BrkVals",data=family["BrkVals"],compression="gzip",chunks=True)
