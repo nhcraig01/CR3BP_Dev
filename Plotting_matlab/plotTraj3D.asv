@@ -1,0 +1,275 @@
+function h = plotTraj3D(X, sys, opts)
+% plotTraj3D  Plot a 3D trajectory (line) with optional 3D cone arrowheads.
+%   X   : n×6, [x y z vx vy vz] (typically nondimensional)
+%   sys : struct with required scales: sys.Ls, sys.Ts
+%   opts (name–value or struct):
+%     Color            : [r g b], default [0 0.447 0.741]
+%     LineWidth        : default 1.8
+%     LineStyle        : '-', '--', ':', default '-'
+%     Marker           : default 'none'
+%     Arrows           : true|false, default false
+%     ArrowStep        : integer >=1, default 50
+%     ArrowScale       : overall size factor vs local segment length, default 0.2
+%     ArrowUseTangent  : true|false (use geometric tangent instead of v), default false
+%     ConeAspect       : base radius as fraction of cone length, default 0.35
+%     ConeResolution   : cylinder facets (>=8), default 16
+%     ConeAlpha        : 0..1 face alpha, default 1
+%     Hold             : 'auto'|'on'|'off', default 'auto'
+%
+% Returns:
+%   h.line   : line handle
+%   h.arrows : array of surface handles (cones), or []
+
+% -------- Parse --------
+arguments
+    X (:,6) double
+    sys struct
+    opts.Color = [0 0.4470 0.7410]
+    opts.LineWidth (1,1) double {mustBePositive} = 1.25
+    opts.LineStyle (1,1) string = "-"
+    opts.Marker (1,1) string = "none"
+    opts.Arrows (1,1) logical = false
+    opts.ArrowStep (1,1) double {mustBeInteger,mustBePositive} = round()
+    opts.ArrowScale (1,1) double {mustBePositive} = 20
+    opts.ArrowUseTangent (1,1) logical = false
+    opts.ConeAspect (1,1) double {mustBePositive} = 0.35
+    opts.ConeResolution (1,1) double {mustBeInteger,mustBeGreaterThan(opts.ConeResolution,7)} = 16
+    opts.ConeAlpha (1,1) double {mustBeGreaterThanOrEqual(opts.ConeAlpha,0), mustBeLessThanOrEqual(opts.ConeAlpha,1)} = 1
+    opts.Hold (1,1) string {mustBeMember(opts.Hold,["auto","on","off"])} = "auto"
+end
+
+% -------- Validate sys --------
+assert(isfield(sys,'Ls') && isscalar(sys.Ls) && isnumeric(sys.Ls), ...
+    'plotTraj3D:sys','sys.Ls (scalar) is required.');
+assert(isfield(sys,'Ts') && isscalar(sys.Ts) && isnumeric(sys.Ts), ...
+    'plotTraj3D:sys','sys.Ts (scalar) is required.');
+
+% -------- Dimensionalize --------
+r = X(:,1:3) * sys.Ls;                % positions (dim)
+v = X(:,4:6) * (sys.Ls/sys.Ts);   % velocities (dim)
+
+% -------- Plot line --------
+ax = gca;
+restoreHold = false;
+if opts.Hold == "auto"
+    restoreHold = ~isHold(ax);
+    hold(ax,'on');
+elseif opts.Hold == "on"
+    hold(ax,'on');
+else
+    hold(ax,'off');
+end
+
+h = struct('line',[], 'arrows',[]);
+h.line = plot3(ax, r(:,1), r(:,2), r(:,3), ...
+    'Color', opts.Color, 'LineWidth', opts.LineWidth, ...
+    'LineStyle', opts.LineStyle, 'Marker', opts.Marker);
+
+% -------- Cone arrowheads --------
+if opts.Arrows && size(r,1) >= 2
+    % indices for arrowheads
+    idx = 1:opts.ArrowStep:size(r,1);
+
+    % direction: velocity or geometric tangent
+    if opts.ArrowUseTangent
+        dr = diff(r); dr = [dr; dr(end,:)];      % forward diff with padding
+        dir = dr(idx,:);
+    else
+        dir = v(idx,:);
+    end
+    mags = vecnorm(dir,2,2);
+    valid = mags > 0 & all(isfinite(dir),2);
+
+    % characteristic length to scale cone size
+    seg = vecnorm(diff(r),2,2);
+    if any(isfinite(seg))
+        Lchar = median(seg(isfinite(seg) & seg>0));
+        if isempty(Lchar) || ~isfinite(Lchar), Lchar = 1; end
+    else
+        Lchar = 1;
+    end
+    Lcone = opts.ArrowScale * Lchar;             % cone length
+    Rcone = opts.ConeAspect * Lcone;             % base radius
+
+    % unit cone along +Z, tip at z=+Lcone, base at z=0
+    [Cxr, Cyr, Cz] = cylinder([Rcone 0], opts.ConeResolution);
+    Cz = Cz * Lcone;   % height along local z
+
+    h.arrows = gobjects(0);
+    for k = 1:numel(idx)
+        if ~valid(k), continue; end
+        base = r(idx(k),:);
+        d = dir(k,:) / mags(k);
+
+        % Build rotation matrix that maps local ẑ=[0 0 1] to d
+        R = rotToVector([0 0 1], d);
+
+        % Transform cone coordinates
+        P = R * [Cxr(:)'; Cyr(:)'; Cz(:)'];
+        Xc = reshape(P(1,:), size(Cxr)) + base(1);
+        Yc = reshape(P(2,:), size(Cyr)) + base(2);
+        Zc = reshape(P(3,:), size(Cz )) + base(3);
+
+        % Draw cone
+        hs = surf(ax, Xc, Yc, Zc, ...
+            'FaceColor', opts.Color, 'EdgeColor', 'none', 'FaceAlpha', opts.ConeAlpha);
+        h.arrows(end+1) = hs;
+    end
+end
+
+if restoreHold, hold(ax,'off'); end
+end
+
+% ---------- Helpers ----------
+function tf = isHold(ax)
+s = get(ax,'NextPlot'); tf = strcmpi(s,'add');
+end
+
+function R = rotToVector(a, b)
+% Rotation matrix mapping unit vector a to unit vector b
+a = a(:)/norm(a); b = b(:)/norm(b);
+v = cross(a,b);
+c = dot(a,b);
+if c > 1-1e-12
+    R = eye(3);
+elseif c < -1+1e-12
+    % 180°: pick orthonormal axis
+    [~,i] = max(abs(a));
+    tmp = zeros(3,1); tmp(mod(i,3)+1) = 1;
+    axis = tmp - a*dot(a,tmp); axis = axis/norm(axis);
+    R = axang2rotm([axis.' pi]);
+else
+    vx = [  0   -v(3)  v(2);
+           v(3)   0   -v(1);
+          -v(2) v(1)    0  ];
+    R = eye(3) + vx + vx*vx*((1-c)/(norm(v)^2));
+end
+end
+
+function R = axang2rotm(axang)
+u = axang(1:3).'; th = axang(4);
+ux=u(1); uy=u(2); uz=u(3);
+ct = cos(th); st = sin(th); vt = 1-ct;
+R = [ux*ux*vt+ct,    ux*uy*vt-uz*st, ux*uz*vt+uy*st;
+     ux*uy*vt+uz*st, uy*uy*vt+ct,    uy*uz*vt-ux*st;
+     ux*uz*vt-uy*st, uy*uz*vt+ux*st, uz*uz*vt+ct   ];
+end
+% 
+% 
+% function h = plotTraj3D(X, sys, opts)
+% % plotTraj3D  Plot a 3D trajectory from an n×6 state history.
+% %
+% %   h = plotTraj3D(X, sys) plots dimensionalized positions in 3D.
+% %
+% %   Inputs
+% %   ------
+% %   X    : n×6 state history [x y z vx vy vz] (nondimensional).
+% %   sys  : struct with required fields:
+% %            - Ls : length scale
+% %            - Ts : time scale
+% %   opts : optional overrides (name–value or struct)
+% %          'Color'        : line color (default: [0 0.447 0.741])
+% %          'LineWidth'    : line width (default: 1.8)
+% %          'LineStyle'    : '-', '--', ':' (default: '-')
+% %          'Marker'       : 'none','o','.' (default: 'none')
+% %          'Arrows'       : true|false (default: false)
+% %          'ArrowStep'    : integer ≥1 (default: 50)
+% %          'ArrowScale'   : scale factor for arrow length (default: 0.2)
+% %          'ArrowHeadSize': quiver3 head size (default: 0.5)
+% %          'Hold'         : 'auto'|'on'|'off' (default: 'auto')
+% %
+% %   Output
+% %   ------
+% %   h : struct with handles: h.line, h.arrows (or [])
+% %
+% %   Example
+% %     h = plotTraj3D(X, sys, 'Color',[0 0 0], 'Arrows',true);
+% 
+% % ---------- Argument parsing ----------
+% arguments
+%     X (:,6) double
+%     sys struct
+%     opts.Color = [0 0.4470 0.7410]
+%     opts.LineWidth (1,1) double {mustBePositive} = 1.25
+%     opts.LineStyle (1,1) string = "-"
+%     opts.Marker (1,1) string = "none"
+%     opts.Arrows (1,1) logical = false
+%     opts.ArrowStep (1,1) double {mustBeInteger,mustBePositive} = round(length(X(:,1))/6)
+%     opts.ArrowScale (1,1) double {mustBePositive} = 20
+%     opts.ArrowHeadSize (1,1) double {mustBePositive} = 1
+%     opts.Hold (1,1) string {mustBeMember(opts.Hold,["auto","on","off"])} = "auto"
+% end
+% % ---------- Prep data (always dimensionalize) ----------
+% r = X(:,1:3) * sys.Ls;
+% v = X(:,4:6) * (sys.Ls/sys.Ts); % used for arrows
+% 
+% % ---------- Plot ----------
+% ax = gca;
+% restoreHold = false;
+% if opts.Hold == "auto"
+%     restoreHold = ~isHold(ax);
+%     hold(ax,'on');
+% elseif opts.Hold == "on"
+%     hold(ax,'on');
+% else
+%     hold(ax,'off');
+% end
+% 
+% h = struct('line',[], 'arrows',[]);
+% 
+% h.line = plot3(ax, r(:,1), r(:,2), r(:,3), ...
+%     'Color', opts.Color, ...
+%     'LineWidth', opts.LineWidth, ...
+%     'LineStyle', opts.LineStyle, ...
+%     'Marker', opts.Marker);
+% 
+% % ---------- Direction arrows ----------
+% if opts.Arrows && size(r,1) >= 2
+%     idx = 1:opts.ArrowStep:size(r,1);
+% 
+%     % Use velocity for orientation
+%     dir = v(idx,:);
+%     mags = vecnorm(dir,2,2); mags(mags==0) = 1;
+%     dir = dir ./ mags;
+% 
+%     % Characteristic length for arrow size
+%     seg = vecnorm(diff(r),2,2);
+%     Lchar = max(1, median(seg(~isnan(seg) & isfinite(seg))));
+%     Larrow = opts.ArrowScale * Lchar;
+% 
+%     % Build arrowheads
+%     h.arrows = gobjects(numel(idx),1);
+%     for k = 1:numel(idx)
+%         base = r(idx(k),:);
+%         d = dir(k,:);
+% 
+%         % pick two perpendicular vectors to d
+%         [~,I] = max(abs(d));  % choose axis least aligned
+%         v1 = zeros(1,3); v1(mod(I,3)+1) = 1;
+%         v1 = v1 - dot(v1,d)*d; v1 = v1/norm(v1);
+%         v2 = cross(d,v1);
+% 
+%         % scale for arrowhead size
+%         head_len = Larrow;
+%         head_wid = 0.5*Larrow;
+% 
+%         tip  = base + head_len*d;
+%         side1 = base - head_wid*v1;
+%         side2 = base + head_wid*v1;
+% 
+%         % Draw a filled triangle patch
+%         h.arrows(k) = patch('Vertices',[tip; side1; side2], ...
+%                             'Faces',[1 2 3], ...
+%                             'FaceColor', opts.Color, ...
+%                             'EdgeColor','none', ...
+%                             'Parent', ax);
+%     end
+% end
+% 
+% if restoreHold, hold(ax,'off'); end
+% end
+% 
+% % Helper
+% function tf = isHold(ax)
+% s = get(ax,'NextPlot'); tf = strcmpi(s,'add');
+% end

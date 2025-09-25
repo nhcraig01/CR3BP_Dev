@@ -226,7 +226,7 @@ def CR3BP_symOrb_f(fv: np.array, mu: float, rtol: float = 1e-13, atol: float = 1
 
     return res
 
-def CR3BP_symOrb_df(fv: np.array, mu: float, fixed_var: Literal["x", "z", "free"], rtol: float = 1e-13, atol: float = 1e-13) -> np.array:
+def CR3BP_symOrb_df(fv: np.array, mu: float, fixed_var: Literal["x", "z", "free"] = "free", rtol: float = 1e-13, atol: float = 1e-13) -> np.array:
     """ Computes the Jacobian of the final state residual for a symmetric orbit solver in the Circular Restricted Three-Body Problem (CR3BP).
 
     Parameters:
@@ -315,6 +315,17 @@ def CR3BP_symOrb_solver(fv0: np.array, mu: float, fixed_var: Literal["x", "z", "
     
     return fv_sol
 
+def CR3BP_Orb_solver_funcs(Solver_Type: Literal["Symmetric","Asymetric"]):
+    if Solver_Type == "Symmetric":
+        def X2fv(X, T): return np.array([X[0], X[2], X[4], T/2])
+        def fv2X_T(fv): return np.array([fv[0], 0, fv[1], 0, fv[2], 0]), fv[3]*2
+
+        CR3BP_Orb_solver = CR3BP_symOrb_solver
+        CR3BP_f = CR3BP_symOrb_f
+        CR3BP_df = CR3BP_symOrb_df
+    
+    return X2fv, fv2X_T, CR3BP_Orb_solver, CR3BP_f, CR3BP_df
+
 def CR3BP_Lyap_ICs(Lagrn_pt: np.array, mu: float, amp: float=1e-2) -> tuple[np.array,float]:
     """ Computes ballpark initial conditions for a planar orbit around a Lagrange point via linearizing the EOMs.
 
@@ -344,10 +355,10 @@ def CR3BP_Lyap_ICs(Lagrn_pt: np.array, mu: float, amp: float=1e-2) -> tuple[np.a
     
     # Set initial conditions based on the specified direction
     v = v_lyap/v_lyap[0]  # normalize so x-component is 1
-    ICs = X_eq + v*amp  # perturb in x-direction
+    dX0 = v*amp  # required perturbation to ICs
     T = 2 * np.pi / np.abs(w[idx_lyap[0]].imag)  # period of the linearized motion
     
-    return np.array(ICs), T
+    return dX0, T
 
 def CR3BP_Jacobi(X: np.array, mu: float) -> float:
     """ Computes the Jacobi constant for a given state in the Circular Restricted Three-Body Problem (CR3BP).
@@ -405,9 +416,8 @@ def CR3BP_PseudArcL(dfdfv: np.array, cont: dict = None) -> np.array:
     if cont['type'] == 'family':
         # Take the singular vector corresponding to the second smallest singular value
         tangent = V[:, -1]
-    elif cont[type] == 'bifurcation':
+    elif cont['type'] == 'bifurcation':
         tangent = V[:, -2]
-        return tangent/norm(tangent)
         
     # Align the tangent with align_vec
     if np.dot(tangent, cont['align_vec']) < 0:
@@ -417,19 +427,18 @@ def CR3BP_PseudArcL(dfdfv: np.array, cont: dict = None) -> np.array:
 
     return tangent
 
-def CR3BP_Bifur_Detec(fv0: np.array, fv1: np.array, Brk0: np.array, Brk1: np.array, Type: Literal["Tan","P2","P3","P4"], fun_dfdfv) -> tuple[np.array,np.array]:
+def CR3BP_Bifur_Detec(X0s: np.array, Ts: float, Brks: np.array, Type: Literal["Tan","P2","P3","P4"]) -> tuple[np.array,np.array]:
     """ This function detects bifurcations of a given type
 
     Parameters:
-    fv0 (np.array): Free variable prior to bifurcation
-    fv1 (np.array): Free variable after bifurcation
-    Brk0 (np.array): Brouke values prior
-    Brk1 (np.array): Brouke values after
+    X0s (np.array): Initial states before and after bifurcation
+    Ts (float): Orbit period ...
+    Brks (np.array): Brouke values ...
     Type (string): Bifurcation type
 
     Returns: 
-    fv_B (np.array): Approximated free variable at bifurcation
-    dfv_B (np.array): Normalized bifurcation tangent direction
+    X0_b (np.array): Approximated X0 at bifurcation
+    T_b (np.array): Approximated T at bifurcation
     """
     if Type == "Tan":
         beta = lambda alpha: -2*alpha - 2
@@ -441,11 +450,11 @@ def CR3BP_Bifur_Detec(fv0: np.array, fv1: np.array, Brk0: np.array, Brk1: np.arr
         beta = lambda alpha: 2
     
         # set up linear interpolation points
-    orb_P1 = Brk0
-    orb_P2 = Brk1
+    orb_P1 = Brks[0,:]
+    orb_P2 = Brks[1,:]
 
-    bif_P1 = np.array([Brk0[0],beta(Brk0[0])])
-    bif_P2 = np.array([Brk1[0],beta(Brk1[0])])
+    bif_P1 = np.array([Brks[0,0],beta(Brks[0,0])])
+    bif_P2 = np.array([Brks[1,0],beta(Brks[1,0])])
 
     # Find the approximate intersection point
     a11 = det(np.array([orb_P1,
@@ -462,8 +471,8 @@ def CR3BP_Bifur_Detec(fv0: np.array, fv1: np.array, Brk0: np.array, Brk1: np.arr
     b22 = det(np.array([[bif_P1[1], 1],
                         [bif_P2[1], 1]]))
     
-    num = det(np.array[[a11, a12], 
-                       [a21, a22]])
+    num = det(np.array([[a11, a12], 
+                        [a21, a22]]))
     den = det(np.array([[a12, b12],
                         [a22, b22]]))
     
@@ -471,14 +480,12 @@ def CR3BP_Bifur_Detec(fv0: np.array, fv1: np.array, Brk0: np.array, Brk1: np.arr
     alph_bif = num/den
 
     # Bifurcation distance between the pre and post values
-    d = (alph_bif-Brk0[0])/(Brk1[0]-Brk0[0])
+    d = (alph_bif-Brks[0,0])/(Brks[1,0]-Brks[0,0])
 
-    fv_B = (1-d)*fv0 + d*fv1
-    
-    cont = {"Type": "bifurcation"}
-    dfv_B = CR3BP_PseudArcL(fun_dfdfv(fv_B),cont)
+    X0_b = (1-d)*X0s[0,:] + d*X0s[1,:]
+    T_b = (1-d)*Ts[0] + d*Ts[1]
 
-    return fv_B, dfv_B
+    return X0_b, T_b
 
 def fix_phase(v: np.array) -> np.array:
     """ Fixes the phase of a vector v by normalizing it based on its first non-zero element.
@@ -622,11 +629,21 @@ def eig_sort(A: np.array,prev_vecs: np.array = None, tol_one: float=1e-4, tol_un
 
     return w_out, V_out
 
-def save_family(family,out_loc):    
-    with h5py.File(out_loc, "w") as f:
-        f.create_dataset("Name",data=family["Name"],compression="gzip",chunks=True)
-        f.create_dataset("X_hst",data=family["X_hst"],compression="gzip",chunks=True)
-        f.create_dataset("t_hst",data=family["t_hst"],compression="gzip",chunks=True)
-        f.create_dataset("JCs",data=family["JCs"],compression="gzip",chunks=True)
-        f.create_dataset("STMs",data=family["STMs"],compression="gzip",chunks=True)
-        f.create_dataset("BrkVals",data=family["BrkVals"],compression="gzip",chunks=True)
+def save_family(family_data: dict,output_loc: str):    
+    with h5py.File(output_loc, "w") as f:
+        f.create_dataset("X_hst",data=family_data["X_hst"],compression="gzip",chunks=True)
+        f.create_dataset("t_hst",data=family_data["t_hst"],compression="gzip",chunks=True)
+        f.create_dataset("JCs",data=family_data["JCs"],compression="gzip",chunks=True)
+        f.create_dataset("STMs",data=family_data["STMs"],compression="gzip",chunks=True)
+        f.create_dataset("BrkVals",data=family_data["BrkVals"],compression="gzip",chunks=True)
+
+def load_family(input_loc: str) -> dict:
+    family_data = {}
+    with h5py.File(input_loc, "r") as f:
+        family_data["X_hst"]   = f["X_hst"][:]     # (6 x n x N) array
+        family_data["t_hst"]   = f["t_hst"][:]     # (1 x n x N) array
+        family_data["JCs"]     = f["JCs"][:]       # (1 x N) array
+        family_data["STMs"]    = f["STMs"][:]      # (6 x 6 x N) array
+        family_data["BrkVals"] = f["BrkVals"][:]   # (whatever shape you saved)
+
+    return family_data
