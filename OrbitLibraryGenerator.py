@@ -24,14 +24,14 @@ with open(path, "r") as file:
     Sys = yaml.safe_load(file)
 mu = Sys['mu']
 
-# Family continuation parameters (Edit this section to generate different families)
+# Family continuation parameters (Edit this section to generate different families) -------------------------
 Norbs = 10
 Npts = 2000
 name = 'idky'                  # family name
 solver_type = "Asymmetric"           # type of orbit solver to be used
 z0 = 0
-z0_dir = -1
-IC_step_dst0 = 1e-3                 # Initial step off distance from 
+z0_dir = 1
+IC_step_dst0 = 1e-4                 # Initial step off distance from 
 IC_step_dst = 4e-3                  # Step distance between ICs
 align_vec0 = [0,1,0,0,0,0]          # intial vector to move along for family continuation
 norm_dims = np.array([0,1])         # dimensions of free variable to normalize against
@@ -42,8 +42,10 @@ fixed_var0 = "free"                    # solution initial fixed variable
 # init_orb = {"type": "Lp_Lin", "Lp": "L3", "Step_off_dist": IC_step_dst0*align_vec0[0]}
 
 # Generate first orbit from bifurcation in another family
-bifur_family_path = Path(__file__).parent / sys_folder / "L1_N_Halo.h5"
-init_orb = {"type": "Bifur", "Bifur_type": "Tan", "indxs": [251,252], "bifur_family_path": bifur_family_path}
+bifur_family_path = Path(__file__).parent / sys_folder / "L2_N_Halo.h5"
+init_orb = {"type": "Bifur", "Bifur_type": "Tan", "indxs": [243,244], "bifur_family_path": bifur_family_path}
+
+# -------------------------------------------------------------------------------------------------------------
 
 
 
