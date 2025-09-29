@@ -28,6 +28,7 @@ arguments
     opts.LineWidth (1,1) double {mustBePositive} = 1.25
     opts.LineStyle (1,1) string = "-"
     opts.Marker (1,1) string = "none"
+    opts.MarkerIndx (1,:) = []
     opts.Arrows (1,1) logical = false
     opts.ArrowStep (1,1) double {mustBeInteger,mustBePositive} = round(length(X(:,1))/6)
     opts.ArrowScale (1,1) double {mustBePositive} = 15
@@ -35,7 +36,6 @@ arguments
     opts.ConeAspect (1,1) double {mustBePositive} = .3
     opts.ConeResolution (1,1) double {mustBeInteger,mustBeGreaterThan(opts.ConeResolution,7)} = 16
     opts.ConeAlpha (1,1) double {mustBeGreaterThanOrEqual(opts.ConeAlpha,0), mustBeLessThanOrEqual(opts.ConeAlpha,1)} = 1
-    opts.Hold (1,1) string {mustBeMember(opts.Hold,["auto","on","off"])} = "auto"
 end
 % -------- Dimensionalize --------
 r = X(:,1:3) * sys.Ls;                % positions (dim)
@@ -43,20 +43,11 @@ v = X(:,4:6) * (sys.Ls/sys.Ts);   % velocities (dim)
 
 % -------- Plot line --------
 ax = gca;
-restoreHold = false;
-if opts.Hold == "auto"
-    restoreHold = ~isHold(ax);
-    hold(ax,'on');
-elseif opts.Hold == "on"
-    hold(ax,'on');
-else
-    hold(ax,'off');
-end
 
 h = struct('line',[], 'arrows',[]);
 h.line = plot3(ax, r(:,1), r(:,2), r(:,3), ...
     'Color', opts.Color, 'LineWidth', opts.LineWidth, ...
-    'LineStyle', opts.LineStyle, 'Marker', opts.Marker);
+    'LineStyle', opts.LineStyle, 'Marker', opts.Marker,'MarkerIndices',opts.MarkerIndx);
 
 % -------- Cone arrowheads --------
 if opts.Arrows && size(r,1) >= 2
@@ -110,15 +101,9 @@ if opts.Arrows && size(r,1) >= 2
         h.arrows(end+1) = hs;
     end
 end
-
-if restoreHold, hold(ax,'off'); end
 end
 
 % ---------- Helpers ----------
-function tf = isHold(ax)
-s = get(ax,'NextPlot'); tf = strcmpi(s,'add');
-end
-
 function R = rotToVector(a, b)
 % Rotation matrix mapping unit vector a to unit vector b
 a = a(:)/norm(a); b = b(:)/norm(b);

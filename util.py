@@ -101,7 +101,7 @@ CR3BP_dUdr_jax = partial(jax.jit)(jax.grad(CR3BP_U_jax, argnums=0)) # 1st order 
 CR3BP_dUdrdr_jax = partial(jax.jit)(jax.jacobian(CR3BP_dUdr_jax, argnums=0)) # 2nd order Jacobians of U
 
 @partial(jax.jit, static_argnames=["rtol","atol",])
-def CR3BP_Phi_jax(X0: jnp.array, T: float, mu: float, rtol: float = 1e-13, atol: float = 1e-13) -> jnp.array:
+def CR3BP_Phi_jax(X0: jnp.array, T: float, mu: float, rtol: float = 1e-13, atol: float = 1e-13, t_hst_out: jnp.array = None) -> jnp.array:
     """ CR3BP flow map using JAX and Diffrax.
     Integrates the equations of motion for the Circular Restricted Three-Body Problem (CR3BP) using JAX and Diffrax.
 
@@ -111,6 +111,7 @@ def CR3BP_Phi_jax(X0: jnp.array, T: float, mu: float, rtol: float = 1e-13, atol:
     mu (float): Mass ratio of the two primary bodies.
     rtol (float): Relative tolerance for the integrator.
     atol (float): Absolute tolerance for the integrator.
+    t_hst_out(jnp.array): Array of output times if provided
 
     Returns:
     Xf (jnp.array): State vector at time T.
@@ -122,7 +123,11 @@ def CR3BP_Phi_jax(X0: jnp.array, T: float, mu: float, rtol: float = 1e-13, atol:
     term = dfx.ODETerm(ode)
     solver = dfx.Dopri8()
     controller = dfx.PIDController(rtol=rtol, atol=atol)
-    saveat = dfx.SaveAt(t1=True)
+
+    if t_hst_out is None:
+        saveat = dfx.SaveAt(t1=True)
+    else:
+        saveat = dfx.SaveAt(ts = t_hst_out)
     
     sol = dfx.diffeqsolve(
         term,
@@ -136,7 +141,10 @@ def CR3BP_Phi_jax(X0: jnp.array, T: float, mu: float, rtol: float = 1e-13, atol:
         max_steps=5_000_000,
         saveat=saveat
     )
-    return sol.ys[-1]
+    if t_hst_out is None:
+        return sol.ys[-1]
+    else:
+        return sol.ys
 
 CR3BP_dPhidX0_jax = partial(jax.jit, static_argnames=["rtol","atol",])(jax.jacrev(CR3BP_Phi_jax, argnums=0))
     
@@ -169,8 +177,8 @@ def CR3BP_Traj_Sol(X0: np.array, T: float, mu: float, rtol: float = 1e-13, atol:
         t_eval = t_hst, 
         rtol = rtol, 
         atol = atol, 
-        max_step=T/100, 
-        first_step = 1e-4)
+        max_step=1e-3, 
+        first_step = 1e-5)
     
     X_hst = sol.y
     return X_hst.T, t_hst
@@ -249,11 +257,11 @@ def CR3BP_symOrb_df(fv: np.array, mu: float, fixed_var: Literal["x", "z", "free"
     dPhidX0, dPhidT = CR3BP_dPhi_jax(X0, T2, mu, rtol, atol)
     
     #  Full Jacobian including time derivative
-    jac_full = np.concatenate((dPhidX0, dPhidT[:, None]), axis=1)
+    dXfdX0T = np.concatenate((dPhidX0, dPhidT[:, None]), axis=1)
 
     # Jacobian of the initial state with respect to free variables
     if fixed_var == "x":
-        dX0dFv = np.array([[0, 0, 0, 0],
+        dX0Tdfv = np.array([[0, 0, 0, 0],
                              [0, 0, 0, 0],
                              [0, 1, 0, 0],
                              [0, 0, 0, 0],
@@ -261,7 +269,7 @@ def CR3BP_symOrb_df(fv: np.array, mu: float, fixed_var: Literal["x", "z", "free"
                              [0, 0, 0, 0],
                              [0, 0, 0, 1]], dtype=float)
     elif fixed_var == "z":
-        dX0dFv = np.array([[1, 0, 0, 0],
+        dX0Tdfv = np.array([[1, 0, 0, 0],
                              [0, 0, 0, 0],
                              [0, 0, 0, 0],
                              [0, 0, 0, 0],
@@ -269,7 +277,7 @@ def CR3BP_symOrb_df(fv: np.array, mu: float, fixed_var: Literal["x", "z", "free"
                              [0, 0, 0, 0],
                              [0, 0, 0, 1]], dtype=float)
     elif fixed_var == "free":
-        dX0dFv = np.array([[1, 0, 0, 0],
+        dX0Tdfv = np.array([[1, 0, 0, 0],
                              [0, 0, 0, 0],
                              [0, 1, 0, 0],
                              [0, 0, 0, 0],
@@ -278,15 +286,15 @@ def CR3BP_symOrb_df(fv: np.array, mu: float, fixed_var: Literal["x", "z", "free"
                              [0, 0, 0, 1]], dtype=float)
     
     # Jacobin of residual with respect to final state
-    dres_dfv = np.array([[0, 1, 0, 0, 0, 0],
+    dfdXf = np.array([[0, 1, 0, 0, 0, 0],
                             [0, 0, 0, 1, 0, 0],
                             [0, 0, 0, 0, 0, 1]], dtype=float)
     
 
     # Jacobian of the final state residual with respect to free variables
-    jac = dres_dfv @ jac_full @ dX0dFv
+    dfdfv = dfdXf @ dXfdX0T @ dX0Tdfv
 
-    return jac
+    return dfdfv
 
 def CR3BP_symOrb_solver(fv0: np.array, mu: float, fixed_var: Literal["x", "z", "free"] = "free", gtol: float = 1e-12, rtol: float = 1e-13, atol: float = 1e-13):
     """ Solves for a symmetric periodic orbit in the Circular Restricted Three-Body Problem (CR3BP) using a root-finding approach.
@@ -311,11 +319,178 @@ def CR3BP_symOrb_solver(fv0: np.array, mu: float, fixed_var: Literal["x", "z", "
     res = lambda fv: CR3BP_symOrb_f(fv,mu, rtol, atol)
     res_jac = lambda fv: CR3BP_symOrb_df(fv,mu, fixed_var, rtol, atol)
 
-    fv_sol = least_squares(res, x0 = fv0, jac=res_jac, verbose=0,ftol=ftol,xtol=xtol,gtol=gtol,x_scale='jac',method='dogbox')
+    fv_sol = least_squares(res, 
+                           x0 = fv0, 
+                           jac=res_jac, 
+                           verbose=0, 
+                           ftol=ftol, 
+                           xtol=xtol, 
+                           gtol=gtol, 
+                           x_scale='jac', 
+                           method='dogbox',
+                           max_nfev=1e4)
     
     return fv_sol
 
-def CR3BP_Orb_solver_funcs(Solver_Type: Literal["Symmetric","Asymetric"]):
+def CR3BP_Zplane_Cross_ICs(X0: np.array, T: float, mu, z_cross: float = 0.1, dir: int = 0, rtol: float = 1e-13, atol: float = 1e-13):
+    """ Given the ICs of a periodic orbit under CR3BP dynamics, this function solves for the X/Z plane crossings at z=z_cross
+
+    Parameters: 
+    X0 (np.array): Periodic orbit initial state
+    T (float): Periodic orbit period
+    z_cross (float): Desired X/Y plane crossing z value
+    dir (int): direction of crossing 0 (both), +1 (upward), -1 (downward)
+    rtol (float): relative integration tolerance
+    atol (float): absolute integration tolerance
+
+    Returns:
+
+
+    """
+    def ode(t,X): return CR3BP_EOMs(X,mu)
+
+    # event
+    def ev_z(t,X):
+        return X[2] - z_cross
+    ev_z.terminal = False
+    ev_z.direction = dir
+
+    sol = solve_ivp(
+        fun = ode, 
+        t_span = [0.0,T], 
+        y0 = X0, 
+        method = "DOP853",
+        rtol = rtol, 
+        atol = atol, 
+        max_step=T/100, 
+        first_step = 1e-4, 
+        events = ev_z)
+    
+    X0_cross = np.array(sol.y_events[0]).reshape(-1)
+
+    return X0_cross
+
+def CR3BP_asymOrb_f(fv: np.array, z0: float, mu: float, rtol: float = 1e-13, atol: float = 1e-13) -> np.array:
+    """ Computes the final state residual for an asymmetric orbit solver in the Circular Restricted Three-Body Problem (CR3BP).
+
+    Parameters:
+    fv (np.array): Free variables defining the asymmetric orbit
+    z0 (float): Orbit initial state z coordinate
+    mu (float): Mass ratio of the two primary bodies.
+    rtol (float): Relative tolerance for the integrator.
+    atol (float): Absolute tolerance for the integrator.
+
+    Returns:
+    res (np.array): residual of the final state at the final period
+    """
+    # Unpack free variables
+    x0, y0, vx0, vy0, vz0, T = fv
+    X0 = np.array([x0,y0,z0,vx0,vy0,vz0]) # Intial state
+    
+    # Integrate to the period
+    Xf = CR3BP_Phi_jax(X0, T, mu, rtol, atol)
+
+    # Final state residual for asymmetric orbit
+    res = Xf-X0  
+
+    return res
+
+def CR3BP_asymOrb_df(fv: np.array, z0: float, mu: float, fixed_var: Literal["x", "y", "free"] = "free", rtol: float = 1e-13, atol: float = 1e-13) -> np.array:
+    """ Computes the Jacobian of the final state residual for an asymmetric orbit solver in the Circular Restricted Three-Body Problem (CR3BP).
+    This already assumes that z0 is fixed at a constant value
+
+    Parameters:
+    fv (np.array): Free variables defining the asymmetric periodic orbit.
+    z0 (float): Orbit initial state z coordinate
+    mu (float): Mass ratio of the two primary bodies.
+    fixed_var (str): Specifies which variable is fixed ('x', 'y', or 'free').
+    rtol (float): Relative tolerance for the integrator.
+    atol (float): Absolute tolerance for the integrator.
+
+    Returns:
+    jac (np.array): Jacobian of the residual with respect to the free variables.
+    """
+
+    # Unpack free variables
+    x0, y0, vx0, vy0, vz0, T = fv
+    X0 = np.array([x0,y0,z0,vx0,vy0,vz0]) # Intial state
+
+    # compute Jacobians of the flow map
+    dPhidX0, dPhidT = CR3BP_dPhi_jax(X0, T, mu, rtol, atol)
+    
+    #  Full Jacobian including time derivative
+    dXfdX0T = np.concatenate((dPhidX0-np.identity(6), dPhidT[:, None]), axis=1)
+
+    # Jacobian of the initial state with respect to free variables
+    if fixed_var == "x":
+        dX0Tdfv = np.array([[0, 0, 0, 0, 0, 0],
+                            [0, 1, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0],
+                            [0, 0, 1, 0, 0, 0],
+                            [0, 0, 0, 1, 0, 0],
+                            [0, 0, 0, 0, 1, 0],
+                            [0, 0, 0, 0, 0, 1]], dtype=float)
+    elif fixed_var == "y":
+        dX0Tdfv = np.array([[1, 0, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0],
+                            [0, 0, 1, 0, 0, 0],
+                            [0, 0, 0, 1, 0, 0],
+                            [0, 0, 0, 0, 1, 0],
+                            [0, 0, 0, 0, 0, 1]], dtype=float)
+    elif fixed_var == "free":
+        dX0Tdfv = np.array([[1, 0, 0, 0, 0, 0],
+                            [0, 1, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0],
+                            [0, 0, 1, 0, 0, 0],
+                            [0, 0, 0, 1, 0, 0],
+                            [0, 0, 0, 0, 1, 0],
+                            [0, 0, 0, 0, 0, 1]], dtype=float)
+    
+
+    # Jacobian of the final state residual with respect to free variables
+    jac = dXfdX0T @ dX0Tdfv
+
+    return jac
+
+def CR3BP_asymOrb_solver(fv0: np.array, z0: float, mu: float, fixed_var: Literal["x", "y", "free"] = "free", gtol: float = 1e-12, rtol: float = 1e-13, atol: float = 1e-13):
+    """ Solves for an asymmetric periodic orbit in the Circular Restricted Three-Body Problem (CR3BP) using a root-finding approach.
+
+    Parameters:
+    fv0 (np.array): Initial guess for the free variables defining the symmetric periodic orbit.
+    z0 (float): Orbit initial state z coordinate
+    mu (float): Mass ratio of the two primary bodies.
+    fixed_var (str): Specifies which variable is fixed ('x', 'y', or 'free').
+    gtol(float): Gradient tolerance for the root-finding algorithm.
+    rtol (float): Relative tolerance for the integrator.
+    atol (float): Absolute tolerance for the integrator.
+    dt0 (float): Intial integration step size
+
+    Returns:
+    tuple: A tuple containing:
+        - fv_sol (np.array): Solution for the free variables defining the symmetric periodic orbit.
+        - info (dict): Information about the root-finding process.
+    """
+    
+    xtol = 3e-16 
+    ftol = 1e-12
+    f = lambda fv: CR3BP_asymOrb_f(fv,z0,mu,rtol,atol)
+    f_jac = lambda fv: CR3BP_asymOrb_df(fv,z0,mu,fixed_var,rtol,atol)
+
+    fv_sol = least_squares(f, 
+                           x0 = fv0, 
+                           jac=f_jac, 
+                           verbose=0, 
+                           ftol=ftol, 
+                           xtol=xtol, 
+                           gtol=gtol, 
+                           x_scale='jac', 
+                           method='lm',
+                           max_nfev=int(1e4))
+    
+    return fv_sol
+
+def CR3BP_Orb_solver_funcs(Solver_Type: Literal["Symmetric","Asymmetric"],z0 = None):
     if Solver_Type == "Symmetric":
         def X2fv(X, T): return np.array([X[0], X[2], X[4], T/2])
         def fv2X_T(fv): return np.array([fv[0], 0, fv[1], 0, fv[2], 0]), fv[3]*2
@@ -323,6 +498,13 @@ def CR3BP_Orb_solver_funcs(Solver_Type: Literal["Symmetric","Asymetric"]):
         CR3BP_Orb_solver = CR3BP_symOrb_solver
         CR3BP_f = CR3BP_symOrb_f
         CR3BP_df = CR3BP_symOrb_df
+    elif Solver_Type == "Asymmetric":
+        def X2fv(X,T): return np.array([X[0],X[1],X[3],X[4],X[5],T])
+        def fv2X_T(fv): return np.array([fv[0],fv[1],z0,fv[2],fv[3],fv[4]]), float(fv[5])
+
+        CR3BP_Orb_solver = partial(CR3BP_asymOrb_solver,z0=z0)
+        CR3BP_f = partial(CR3BP_asymOrb_f,z0=z0)
+        CR3BP_df = partial(CR3BP_asymOrb_df,z0=z0)
     
     return X2fv, fv2X_T, CR3BP_Orb_solver, CR3BP_f, CR3BP_df
 

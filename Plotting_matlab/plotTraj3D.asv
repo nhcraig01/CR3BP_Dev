@@ -28,22 +28,16 @@ arguments
     opts.LineWidth (1,1) double {mustBePositive} = 1.25
     opts.LineStyle (1,1) string = "-"
     opts.Marker (1,1) string = "none"
+    opts.MarkerIndx (1,:) int = []
     opts.Arrows (1,1) logical = false
-    opts.ArrowStep (1,1) double {mustBeInteger,mustBePositive} = round()
-    opts.ArrowScale (1,1) double {mustBePositive} = 20
+    opts.ArrowStep (1,1) double {mustBeInteger,mustBePositive} = round(length(X(:,1))/6)
+    opts.ArrowScale (1,1) double {mustBePositive} = 15
     opts.ArrowUseTangent (1,1) logical = false
-    opts.ConeAspect (1,1) double {mustBePositive} = 0.35
+    opts.ConeAspect (1,1) double {mustBePositive} = .3
     opts.ConeResolution (1,1) double {mustBeInteger,mustBeGreaterThan(opts.ConeResolution,7)} = 16
     opts.ConeAlpha (1,1) double {mustBeGreaterThanOrEqual(opts.ConeAlpha,0), mustBeLessThanOrEqual(opts.ConeAlpha,1)} = 1
     opts.Hold (1,1) string {mustBeMember(opts.Hold,["auto","on","off"])} = "auto"
 end
-
-% -------- Validate sys --------
-assert(isfield(sys,'Ls') && isscalar(sys.Ls) && isnumeric(sys.Ls), ...
-    'plotTraj3D:sys','sys.Ls (scalar) is required.');
-assert(isfield(sys,'Ts') && isscalar(sys.Ts) && isnumeric(sys.Ts), ...
-    'plotTraj3D:sys','sys.Ts (scalar) is required.');
-
 % -------- Dimensionalize --------
 r = X(:,1:3) * sys.Ls;                % positions (dim)
 v = X(:,4:6) * (sys.Ls/sys.Ts);   % velocities (dim)
@@ -68,7 +62,8 @@ h.line = plot3(ax, r(:,1), r(:,2), r(:,3), ...
 % -------- Cone arrowheads --------
 if opts.Arrows && size(r,1) >= 2
     % indices for arrowheads
-    idx = 1:opts.ArrowStep:size(r,1);
+    idx = opts.ArrowStep:opts.ArrowStep:size(r,1);
+    disp(idx)
 
     % direction: velocity or geometric tangent
     if opts.ArrowUseTangent
@@ -154,122 +149,3 @@ R = [ux*ux*vt+ct,    ux*uy*vt-uz*st, ux*uz*vt+uy*st;
      ux*uy*vt+uz*st, uy*uy*vt+ct,    uy*uz*vt-ux*st;
      ux*uz*vt-uy*st, uy*uz*vt+ux*st, uz*uz*vt+ct   ];
 end
-% 
-% 
-% function h = plotTraj3D(X, sys, opts)
-% % plotTraj3D  Plot a 3D trajectory from an n×6 state history.
-% %
-% %   h = plotTraj3D(X, sys) plots dimensionalized positions in 3D.
-% %
-% %   Inputs
-% %   ------
-% %   X    : n×6 state history [x y z vx vy vz] (nondimensional).
-% %   sys  : struct with required fields:
-% %            - Ls : length scale
-% %            - Ts : time scale
-% %   opts : optional overrides (name–value or struct)
-% %          'Color'        : line color (default: [0 0.447 0.741])
-% %          'LineWidth'    : line width (default: 1.8)
-% %          'LineStyle'    : '-', '--', ':' (default: '-')
-% %          'Marker'       : 'none','o','.' (default: 'none')
-% %          'Arrows'       : true|false (default: false)
-% %          'ArrowStep'    : integer ≥1 (default: 50)
-% %          'ArrowScale'   : scale factor for arrow length (default: 0.2)
-% %          'ArrowHeadSize': quiver3 head size (default: 0.5)
-% %          'Hold'         : 'auto'|'on'|'off' (default: 'auto')
-% %
-% %   Output
-% %   ------
-% %   h : struct with handles: h.line, h.arrows (or [])
-% %
-% %   Example
-% %     h = plotTraj3D(X, sys, 'Color',[0 0 0], 'Arrows',true);
-% 
-% % ---------- Argument parsing ----------
-% arguments
-%     X (:,6) double
-%     sys struct
-%     opts.Color = [0 0.4470 0.7410]
-%     opts.LineWidth (1,1) double {mustBePositive} = 1.25
-%     opts.LineStyle (1,1) string = "-"
-%     opts.Marker (1,1) string = "none"
-%     opts.Arrows (1,1) logical = false
-%     opts.ArrowStep (1,1) double {mustBeInteger,mustBePositive} = round(length(X(:,1))/6)
-%     opts.ArrowScale (1,1) double {mustBePositive} = 20
-%     opts.ArrowHeadSize (1,1) double {mustBePositive} = 1
-%     opts.Hold (1,1) string {mustBeMember(opts.Hold,["auto","on","off"])} = "auto"
-% end
-% % ---------- Prep data (always dimensionalize) ----------
-% r = X(:,1:3) * sys.Ls;
-% v = X(:,4:6) * (sys.Ls/sys.Ts); % used for arrows
-% 
-% % ---------- Plot ----------
-% ax = gca;
-% restoreHold = false;
-% if opts.Hold == "auto"
-%     restoreHold = ~isHold(ax);
-%     hold(ax,'on');
-% elseif opts.Hold == "on"
-%     hold(ax,'on');
-% else
-%     hold(ax,'off');
-% end
-% 
-% h = struct('line',[], 'arrows',[]);
-% 
-% h.line = plot3(ax, r(:,1), r(:,2), r(:,3), ...
-%     'Color', opts.Color, ...
-%     'LineWidth', opts.LineWidth, ...
-%     'LineStyle', opts.LineStyle, ...
-%     'Marker', opts.Marker);
-% 
-% % ---------- Direction arrows ----------
-% if opts.Arrows && size(r,1) >= 2
-%     idx = 1:opts.ArrowStep:size(r,1);
-% 
-%     % Use velocity for orientation
-%     dir = v(idx,:);
-%     mags = vecnorm(dir,2,2); mags(mags==0) = 1;
-%     dir = dir ./ mags;
-% 
-%     % Characteristic length for arrow size
-%     seg = vecnorm(diff(r),2,2);
-%     Lchar = max(1, median(seg(~isnan(seg) & isfinite(seg))));
-%     Larrow = opts.ArrowScale * Lchar;
-% 
-%     % Build arrowheads
-%     h.arrows = gobjects(numel(idx),1);
-%     for k = 1:numel(idx)
-%         base = r(idx(k),:);
-%         d = dir(k,:);
-% 
-%         % pick two perpendicular vectors to d
-%         [~,I] = max(abs(d));  % choose axis least aligned
-%         v1 = zeros(1,3); v1(mod(I,3)+1) = 1;
-%         v1 = v1 - dot(v1,d)*d; v1 = v1/norm(v1);
-%         v2 = cross(d,v1);
-% 
-%         % scale for arrowhead size
-%         head_len = Larrow;
-%         head_wid = 0.5*Larrow;
-% 
-%         tip  = base + head_len*d;
-%         side1 = base - head_wid*v1;
-%         side2 = base + head_wid*v1;
-% 
-%         % Draw a filled triangle patch
-%         h.arrows(k) = patch('Vertices',[tip; side1; side2], ...
-%                             'Faces',[1 2 3], ...
-%                             'FaceColor', opts.Color, ...
-%                             'EdgeColor','none', ...
-%                             'Parent', ax);
-%     end
-% end
-% 
-% if restoreHold, hold(ax,'off'); end
-% end
-% 
-% % Helper
-% function tf = isHold(ax)
-% s = get(ax,'NextPlot'); tf = strcmpi(s,'add');
-% end
