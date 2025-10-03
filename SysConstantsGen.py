@@ -8,7 +8,7 @@ from scipy.optimize import fsolve
 
 G_dim =  6.67430e-20  # Gravitational constant in km^3/kg/s^2 (https://ssd.jpl.nasa.gov/astro_par.html)
 
-out_path = Path(__file__).parent / "EarthMoon System/EMSys.yaml" # Change this to the desired system name
+out_path = Path(__file__).parent / "EarthMoon_System/EMSys.yaml" # Change this to the desired system name
 
 
 params_path = Path(__file__).parent / "SystemParameters.yaml"
@@ -33,7 +33,7 @@ Sys = {
         'l': distance,  # Distance between primary and secondary in km
     },
     'mu': m2/(m1+m2),  # Mass ratio
-    'Ts': (distance**3/(G_dim*(m1+m2))),  # Characteristic time in seconds
+    'Ts': float(np.sqrt(distance**3/(G_dim*(m1+m2)))),  # Characteristic time in seconds
     'Ms': m1+m2,  # Characteristic mass (total mass of the system) in kg
     'Ls': distance,  # Characteristic length (distance between primary and secondary) in km 
 }

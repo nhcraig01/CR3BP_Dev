@@ -18,32 +18,32 @@ import util
 from util import CR3BP_Phi_jax, CR3BP_dPhidX0_jax, eig_sort, CR3BP_Lyap_ICs, CR3BP_PseudArcL, CR3BP_Traj_Sol, CR3BP_Jacobi, CR3BP_BrkVals, save_family, load_family, CR3BP_Orb_solver_funcs, CR3BP_Bifur_Detec, CR3BP_Zplane_Cross_ICs
 
 # Intialize system parameters
-sys_folder = "EarthMoon System"
+sys_folder = "EarthMoon_System"
 path = Path(__file__).parent / sys_folder / "EMsys.yaml"  # Change this to the desired system name
 with open(path, "r") as file:  
     Sys = yaml.safe_load(file)
 mu = Sys['mu']
 
 # Family continuation parameters (Edit this section to generate different families) -------------------------
-Norbs = 10
+Norbs = 350
 Npts = 2000
-name = 'idky'                  # family name
-solver_type = "Asymmetric"           # type of orbit solver to be used
+name = 'L2_S_Halo'                  # family name
+solver_type = "Symmetric"           # type of orbit solver to be used
 z0 = 0
 z0_dir = 1
-IC_step_dst0 = 1e-4                 # Initial step off distance from 
-IC_step_dst = 4e-3                  # Step distance between ICs
-align_vec0 = [0,1,0,0,0,0]          # intial vector to move along for family continuation
+IC_step_dst0 = 1e-3                 # Initial step off distance from 
+IC_step_dst = 1e-3                  # Step distance between ICs
+align_vec0 = [0,-1,0,0]          # intial vector to move along for family continuation
 norm_dims = np.array([0,1])         # dimensions of free variable to normalize against
-fixed_var = "x"
-fixed_var0 = "free"                    # solution initial fixed variable
+fixed_var0 = "z"                    # solution initial fixed variable
+fixed_var = "free"
 
 # Generate first orbit from linearizing about Lagrange point
 # init_orb = {"type": "Lp_Lin", "Lp": "L3", "Step_off_dist": IC_step_dst0*align_vec0[0]}
 
 # Generate first orbit from bifurcation in another family
-bifur_family_path = Path(__file__).parent / sys_folder / "L2_N_Halo.h5"
-init_orb = {"type": "Bifur", "Bifur_type": "Tan", "indxs": [243,244], "bifur_family_path": bifur_family_path}
+bifur_family_path = Path(__file__).parent / sys_folder / "L2_Lyap.h5"
+init_orb = {"type": "Bifur", "Bifur_type": "Tan", "indxs": [26,27], "bifur_family_path": bifur_family_path}
 
 # -------------------------------------------------------------------------------------------------------------
 
