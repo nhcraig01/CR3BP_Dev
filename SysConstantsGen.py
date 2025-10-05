@@ -56,12 +56,12 @@ def dUx(x, mu): # Derivative of the pseudo-potential function U with respect to 
     r2 = np.abs(x-1+mu)
     return x - (1 - mu)*(x + mu)/(r1**3) - mu*(x - 1 + mu)/(r2**3)
 
-Sys['LagrPts'] = {}
-Sys['LagrPts']['L1'] = np.asarray([fsolve(lambda x: dUx(x, mu), 1 - mu - (mu/3)**(1/3), xtol=1e-12)[0],0,0]).tolist()
-Sys['LagrPts']['L2'] = np.asarray([fsolve(lambda x: dUx(x, mu), 1 - mu + (mu/3)**(1/3), xtol=1e-12)[0],0,0]).tolist()
-Sys['LagrPts']['L3'] = np.asarray([fsolve(lambda x: dUx(x, mu), -1 - 5*mu/12, xtol=1e-12)[0],0,0]).tolist()
-Sys['LagrPts']['L4'] = np.asarray([0.5-mu, np.sqrt(3)/2,0]).tolist()
-Sys['LagrPts']['L5'] = np.asarray([0.5-mu, -np.sqrt(3)/2,0]).tolist()
+L1 = np.asarray([fsolve(lambda x: dUx(x, mu), 1 - mu - (mu/3)**(1/3), xtol=1e-12)[0],0,0]).tolist()
+L2 = np.asarray([fsolve(lambda x: dUx(x, mu), 1 - mu + (mu/3)**(1/3), xtol=1e-12)[0],0,0]).tolist()
+L3 = np.asarray([fsolve(lambda x: dUx(x, mu), -1 - 5*mu/12, xtol=1e-12)[0],0,0]).tolist()
+L4 = np.asarray([0.5-mu, np.sqrt(3)/2,0]).tolist()
+L5 = np.asarray([0.5-mu, -np.sqrt(3)/2,0]).tolist()
+Sys['LagrPts'] = [L1, L2, L3, L4, L5]
 
 # Save System Data to YAML file
 with open(out_path, "w") as file:
