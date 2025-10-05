@@ -28,20 +28,26 @@ m2 = secondary_GM / G_dim  # Mass of secondary in kg
 # Generate system constants dictionary
 Sys = {
     'dim': {
-        'm1': m1,  # Mass of primary in kg
-        'm2': m2,  # Mass of secondary in kg
-        'l': distance,  # Distance between primary and secondary in km
+        'm1': float(m1),  # Mass of primary in kg
+        'm2': float(m2),  # Mass of secondary in kg
+        'l': float(distance),  # Distance between primary and secondary in km
     },
-    'mu': m2/(m1+m2),  # Mass ratio
+    'mu': float(m2/(m1+m2)),  # Mass ratio
     'Ts': float(np.sqrt(distance**3/(G_dim*(m1+m2)))),  # Characteristic time in seconds
-    'Ms': m1+m2,  # Characteristic mass (total mass of the system) in kg
-    'Ls': distance,  # Characteristic length (distance between primary and secondary) in km 
+    'Ms': float(m1+m2),  # Characteristic mass (total mass of the system) in kg
+    'Ls': float(distance),  # Characteristic length (distance between primary and secondary) in km
 }
 
 Sys['Vs'] = Sys['Ls']/Sys['Ts']  # Characteristic velocity in km/s
 Sys['As'] = Sys['Vs']/Sys['Ts']  # Characteristic acceleration in km/s^2
 
+# Calulate positions of primary and secondary in dimensional units
+Sys['dim']['r1'] = np.asarray([-Sys['mu']*Sys['Ls'],0,0]).tolist()  # Position of primary in km
+Sys['dim']['r2'] = np.asarray([Sys['Ls']*(1-Sys['mu']),0,0]).tolist()  # Position of secondary in km
 
+# Claculate positions of primary and secondary in normalized units
+Sys['r1'] = np.asarray([-Sys['mu'],0,0]).tolist()  # Position of primary in normalized units
+Sys['r2'] = np.asarray([1-Sys['mu'],0,0]).tolist()  # Position of secondary in normalized units
 
 # Calculate Lagrange points
 mu = Sys['mu']
